@@ -1,0 +1,18 @@
+[Unit]
+Description=PACE BMS RS232 MQTT monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pace-bms
+Group=pace-bms
+SupplementaryGroups=dialout
+WorkingDirectory=/opt/pace-bms
+EnvironmentFile=/etc/pace-bms.env
+ExecStart=/opt/pace-bms/.venv/bin/python /opt/pace-bms/pace_mqtt.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
