@@ -43,6 +43,8 @@ De gebruikte 39-byte `0x44`-statusindeling is:
 
 De balanceerbits geven aan welke cellen de BMS als balancerend rapporteert. Ze bewijzen niet of de hardware actief of passief balanceert. De BMS kan deze bits ook bij 0 A en na de volmelding blijven zetten.
 
+<img width="800" height="397" alt="balancing" src="https://github.com/user-attachments/assets/a4128819-50fb-471a-9191-e11b986b7378" />
+
 De portal toont geen berekende CAN Charge Current Limit. De eerder onderzochte instruction/control-bits volgden de numerieke CCL-stappen niet betrouwbaar. De lokale stroombegrenzer en de via CAN gerapporteerde CCL moeten daarom als afzonderlijke functies worden beschouwd.
 
 De volstatus betekent evenmin dat FCC opnieuw wordt berekend. Tijdens tests bereikten alle drie de packs hun voldetectie en 100% SOC, terwijl FCC ongewijzigd bleef. FCC kan door deze versie worden gelezen, maar niet geschreven.
