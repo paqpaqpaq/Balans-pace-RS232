@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.venv/
+pace_history.sqlite3*
+*.sqlite3*
+.env
+pace-bms.env
+pace-statuslog-*.json
