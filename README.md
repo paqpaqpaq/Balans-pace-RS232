@@ -4,6 +4,9 @@ Een Python-monitor voor drie PACE LiFePO4-BMS'en met elk een eigen RS232-USB-kab
 
 Deze versie is ontwikkeld en getest met drie PACE-BMS'en die zichzelf identificeren als:
 
+<img width="1623" height="1206" alt="dashboard_webportal" src="https://github.com/user-attachments/assets/a0dbbc29-98db-434c-9926-8b8aa98970b6" />
+
+
 ```text
 P16S200A-31280-1.30C
 ```
