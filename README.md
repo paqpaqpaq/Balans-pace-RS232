@@ -51,7 +51,28 @@ De balanceerbits geven aan welke cellen de BMS als balancerend rapporteert. Ze b
 
 De portal toont geen berekende CAN Charge Current Limit. De eerder onderzochte instruction/control-bits volgden de numerieke CCL-stappen niet betrouwbaar. De lokale stroombegrenzer en de via CAN gerapporteerde CCL moeten daarom als afzonderlijke functies worden beschouwd.
 
-De volstatus betekent evenmin dat FCC opnieuw wordt berekend. Tijdens tests bereikten alle drie de packs hun voldetectie en 100% SOC, terwijl FCC ongewijzigd bleef. FCC kan door deze versie worden gelezen, maar niet geschreven.
+Een volmelding en een FCC-wijziging zijn afzonderlijke gebeurtenissen. Tijdens tests zijn zowel volmeldingen zonder FCC-wijziging als laadcycli met FCC-wijzigingen waargenomen. De precieze leervoorwaarden zijn onbekend. De portal toont FCC en cycli per BMS; FCC kan worden gelezen, maar niet geschreven.
+
+## V2.1: compacte instellingen
+
+De bestaande SOC-, stroom- en spanningsgrafieken en BMS-kaarten blijven behouden. Instellingen staan per onderwerp naast elkaar voor BMS1, BMS2 en BMS3, zonder tabnavigatie of uitklapgroepen. Spanningsgrenzen staan eerst, gevolgd door volmelding/lage SOC, balanceren, laadstroom, temperatuur/energiestand/klok en communicatie. Pack-instellingen staan vóór celinstellingen, met herkenbare OV- en OVP-labels.
+
+De laadstroominstellingen omvatten laad-overstroom en de lokale Charge Current Limiter. Dit is geen uitlezing van de numerieke CAN CCL. Protocolnamen worden leesbaar getoond waar de code bekend is. De spanningsdrempel bij Energiestand (Sleep) wordt niet als bewezen wekspanning aangeduid.
+
+Tijdens schrijven en teruglezen verschijnt een bezigmelding en wordt verdere bediening tijdelijk geblokkeerd. Iedere schrijfknop blijft bij één BMS en één instellingengroep horen. De scrollpositie wordt na schrijven of lezen hersteld.
+
+### Bestaande installatie bijwerken
+
+Bewaar eerst een kopie van je huidige `pace_mqtt.py`. Stop `pace-bmsrs232`, vervang `/opt/pace-bms/pace_mqtt.py` door de nieuwe versie en start de service weer. Je bestaande `/etc/pace-bms.env` blijft staan: daarin staan je eigen USB-paden en eventuele MQTT-instellingen. Vernieuw daarna de browser.
+
+```bash
+sudo systemctl stop pace-bmsrs232
+sudo cp /opt/pace-bms/pace_mqtt.py /opt/pace-bms/pace_mqtt.py.bak
+# Plaats nu de nieuwe pace_mqtt.py in /opt/pace-bms/
+sudo systemctl start pace-bmsrs232
+```
+
+Teruggaan: stop de service, zet de bewaarde `.bak` terug als `pace_mqtt.py` en start opnieuw. Het terugzetten van het programma draait zelf opgeslagen BMS-parameters niet terug. Deze versie ruimt oudere loggegevens op volgens bovenstaande bewaartermijnen; maak vooraf een kopie van de SQLite-database als je die oudere gegevens wilt bewaren.
 
 ## Benodigdheden
 
@@ -203,7 +224,7 @@ Maak vóór wijzigingen een export of noteer alle bestaande waarden. Fabrieksins
 
 ## Historie en exports
 
-De meetgrafieken gebruiken een SQLite-database met twee uur samples. Status- en parametergebeurtenissen worden langer bewaard en kunnen vanuit de portal als JSON worden gedownload.
+De grafieken tonen de laatste twee uur. SQLite bewaart compacte metingen elke vijf seconden gedurende 72 uur. Status- en parametergebeurtenissen blijven maximaal 30 dagen en 2.000 records bewaard; FCC- en cyclusgebeurtenissen maximaal één jaar en 3.000 records. De JSON-export gebruikt schema 2 en bevat de gegevens die nog bewaard zijn. Ruwe diagnostiek staat bij relevante gebeurtenissen; balansstatus blijft in de metingen beschikbaar.
 
 De database staat standaard op:
 

@@ -817,7 +817,7 @@ def individual_alarms_text(s):
 # https://www.scribd.com/document/881727973/A-Series-RS232commuciation-Protocal-PACE-RS232-TY16S-20180705
 WARNING1_BITS = {0:'Cel OV',1:'Cel UV',2:'Pack OV',3:'Pack UV',4:'Laad-overstroom',5:'Ontlaad-overstroom'}
 WARNING2_BITS = {0:'Laden te warm',1:'Ontladen te warm',2:'Laden te koud',3:'Ontladen te koud',
-                 4:'Omgeving te warm',5:'Omgeving te koud',6:'MOSFET te warm',7:'Low power'}
+                 4:'Omgeving te warm',5:'Omgeving te koud',6:'MOSFET te warm',7:'Lage SOC'}
 
 def decode_bits(value, mapping):
     items=[label for bit,label in mapping.items() if value & (1<<bit)]
@@ -845,7 +845,7 @@ def decoded_status(status):
         'limiter_control_bit4':bool(status['control'] & 0x10),
         'limiter_instruction_bit0':bool(status['instructions'] & 0x01),
         'limiter_gear_configuration':'low' if status['control'] & 0x08 else 'high',
-        'limiter_note':'Instruction bit0: kandidaat lokale stroombegrenzer; volgt CAN CCL-verlagingen niet. Control bits zijn raw/configuratie, geen numerieke CAN CCL.',
+        'limiter_note':'PACE v25: control bit4=limiter geconfigureerd, bit3=low gear; instruction bit0=limiter runtime uit. Geen numerieke CAN CCL.',
         'instructions_other_raw':f"0x{status['instructions'] & 0xC9:02X}",
         'control_other_raw':f"0x{status['control'] & 0xE6:02X}",
         'extra_raw':raw_hex(status['extra'])}
@@ -918,10 +918,11 @@ def full_text(s):
 
 
 def charge_limiter_text(s):
-    # Do not equate a configuration flag with active current limiting.
-    return (f"Lokale limiterkandidaat · instruction bit0={int(bool(s['instructions'] & 0x01))}"
-            f" · control bit3={int(bool(s['control'] & 0x08))}"
-            f" · control bit4={int(bool(s['control'] & 0x10))} · geen CAN CCL")
+    enabled = bool(s['control'] & 0x10)
+    gear = 'Low' if s['control'] & 0x08 else 'High'
+    runtime_off = bool(s['instructions'] & 0x01)
+    return (f"Lokale limiter {'Aan' if enabled else 'Uit'} · gear {gear}"
+            f" · runtime-off {'Ja' if runtime_off else 'Nee'} · geen numerieke CAN CCL")
 
 
 
@@ -1532,6 +1533,21 @@ def make_snapshot(
         "soc":
             analog["soc"],
 
+        "remaining_capacity_ah":
+            analog["remaining_capacity_ah"],
+
+        "full_capacity_ah":
+            analog["full_capacity_ah"],
+
+        "design_capacity_ah":
+            analog["design_capacity_ah"],
+
+        "soh":
+            analog["soh"],
+
+        "cycle_count":
+            analog["cycle_count"],
+
         "voltage":
             analog["voltage"],
 
@@ -1540,16 +1556,6 @@ def make_snapshot(
 
         "power":
             analog["power"],
-
-        "full_capacity_ah":
-            analog[
-                "full_capacity_ah"
-            ],
-
-        "cycle_count":
-            analog[
-                "cycle_count"
-            ],
 
         "cells":
             list(cells),
@@ -1772,6 +1778,130 @@ def parse_full_charge(payload):
     }
 
 
+def parse_charge_overcurrent(payload):
+    if len(payload) != 6 or payload[0] != 0x01:
+        raise ValueError("CHG OC: onbekende payload-layout")
+    return {
+        "warning_a": int.from_bytes(payload[1:3], "big"),
+        "protection_a": int.from_bytes(payload[3:5], "big"),
+        "delay_100ms": payload[5],
+    }
+
+
+def parse_limiter_start(payload):
+    if len(payload) != 2:
+        raise ValueError("Limiter-startstroom: verwacht 2 bytes")
+    return {
+        "payload_address": payload[0],
+        "start_current_a": payload[1],
+    }
+
+
+CAN_PROTOCOL_NAMES = {
+    0x00: "PACE",
+    0x01: "Pylon / Deye-familie",
+    0x02: "Growatt",
+    0x03: "Victron",
+    0x04: "Schneider / SE / SMA",
+    0x05: "LuxPower",
+    0x06: "SoroTec / SRD",
+    0x07: "SMA / Studer",
+    0x08: "GoodWe",
+    0x09: "Studer",
+    0x0A: "Sofar",
+    0x0B: "Must / PV",
+    0x0C: "Solis / Jinlang",
+    0x0D: "DIDU / TBB",
+    0x0E: "Senergy / Aifu",
+    0x0F: "TBB",
+    0x10: "Pylon V2.02",
+    0x11: "Growatt V1.09",
+    0x12: "Must V2.02",
+    0x13: "Afore",
+    0x14: "INVT / YWT",
+    0x15: "FUJI",
+    0x16: "Sofar V2.1003",
+    0xFF: "Uit / leeg",
+}
+
+RS485_PROTOCOL_NAMES = {
+    0x00: "PACE Modbus",
+    0x01: "Pylon / Deye / Bentterson",
+    0x02: "Growatt",
+    0x03: "Voltronic",
+    0x04: "Schneider / SE",
+    0x05: "PHOCOS",
+    0x06: "LuxPower",
+    0x07: "Solar",
+    0x08: "Lithium / SMARK",
+    0x09: "EP / MSL",
+    0x0A: "RTU04",
+    0x0B: "LuxPower V0.1",
+    0x0C: "LuxPower V0.3",
+    0x0D: "SRNE / WOW",
+    0x0E: "LEOCH",
+    0x0F: "Pylon F",
+    0x10: "Afore",
+    0x11: "UPS AGXN",
+    0x12: "Orex / Sunpolo",
+    0x13: "XIONGTAO",
+    0x14: "RONGKE",
+    0x15: "XINRUI",
+    0x16: "ELTEK",
+    0x17: "GT",
+    0x18: "Leoch V1.06",
+    0xFF: "Uit / leeg",
+}
+
+
+def protocol_name(mapping, value, kind):
+    if value == 0x29 and kind == "CAN":
+        return "DEYE (gecontroleerd in PBMS Tools)"
+    if value == 0x01 and kind == "RS485":
+        return "PYLON (gecontroleerd in PBMS Tools)"
+    return mapping.get(value, "onbekende firmwarecode")
+
+
+def parse_protocols(payload):
+    if len(payload) != 3:
+        raise ValueError("Communicatieprotocollen: verwacht 3 bytes")
+    can_raw, rs485_raw, selection_raw = payload
+    return {
+        "can_raw": can_raw,
+        "can_hex": f"0x{can_raw:02X}",
+        "can_name": protocol_name(CAN_PROTOCOL_NAMES, can_raw, "CAN"),
+        "rs485_raw": rs485_raw,
+        "rs485_hex": f"0x{rs485_raw:02X}",
+        "rs485_name": protocol_name(RS485_PROTOCOL_NAMES, rs485_raw, "RS485"),
+        "selection_raw": selection_raw,
+        "selection_name": {0x00: "Auto", 0x01: "Manual", 0xFF: "Leeg"}.get(
+            selection_raw, "Onbekend"
+        ),
+    }
+
+
+def limiter_status_from_snapshot(snapshot):
+    if not snapshot:
+        return {
+            "available": False,
+            "enabled": None,
+            "gear": "onbekend",
+            "runtime_off": None,
+            "control_raw": None,
+            "instructions_raw": None,
+        }
+    control = int(snapshot["control_raw"], 16)
+    instructions = int(snapshot["instructions_raw"], 16)
+    return {
+        "available": True,
+        "enabled": bool(control & 0x10),
+        "gear": "low" if control & 0x08 else "high",
+        "runtime_off": bool(instructions & 0x01),
+        "control_raw": snapshot["control_raw"],
+        "instructions_raw": snapshot["instructions_raw"],
+    }
+
+
 # ============================================================
 # PARAMETERS READ
 # ============================================================
@@ -1976,6 +2106,29 @@ def read_parameters():
                 )
             )
 
+            time.sleep(0.08)
+
+            charge_overcurrent = parse_charge_overcurrent(
+                param_request(0xD9)
+            )
+
+            time.sleep(0.08)
+
+            limiter_start = parse_limiter_start(
+                param_request(0xED)
+            )
+
+            time.sleep(0.08)
+
+            protocols = parse_protocols(
+                param_request(0xEB)
+            )
+
+        with cache_lock:
+            limiter_status = limiter_status_from_snapshot(
+                live_cache.get(current_bms())
+            )
+
         data = {
             "read_at":
                 datetime.now()
@@ -1999,6 +2152,14 @@ def read_parameters():
 
             "full_charge":
                 full_charge,
+
+            "charge_overcurrent": charge_overcurrent,
+
+            "limiter_start": limiter_start,
+
+            "limiter_status": limiter_status,
+
+            "protocols": protocols,
         }
 
         with cache_lock:
@@ -2058,6 +2219,29 @@ def write_full_charge(
         0xAE,
         payload,
     )
+
+
+def write_charge_overcurrent(warning_a, protection_a, delay_100ms):
+    payload = (
+        b"\x01"
+        + int(warning_a).to_bytes(2, "big")
+        + int(protection_a).to_bytes(2, "big")
+        + bytes([int(delay_100ms)])
+    )
+    param_write(0xD8, payload)
+
+
+def write_limiter_start(start_current_a, payload_address):
+    param_write(0xEE, bytes([int(payload_address), int(start_current_a)]))
+
+
+def write_limiter_switch(command):
+    # PBmsTools/PACE v25 wire values: enable=0B, disable=0A,
+    # high gear=08, low gear=09. This changes local limiter configuration,
+    # not a numeric CAN CCL value.
+    if command not in (0x08, 0x09, 0x0A, 0x0B):
+        raise ValueError("Onbekende limiteropdracht")
+    param_write(0x99, bytes([command]))
 
 
 def write_balancing(
@@ -2355,7 +2539,8 @@ PAGE = r"""
     content="width=device-width,initial-scale=1"
 >
 
-<title>PACE BMS Monitor</title>
+<title>PACE BMS Monitor · V2.1</title>
+
 
 
 <style>
@@ -2978,12 +3163,115 @@ button {
 #event-log{margin-top:10px;padding:9px;border:1px solid #414752;border-radius:6px}
 #event-log summary{cursor:pointer}#event-list>details{padding:7px 0;border-bottom:1px solid #343943}
 #event-list pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;max-height:280px;overflow:auto}
-#event-log a{color:#56a4ff}</style>
+#event-log a{color:#56a4ff}
+.parameter-progress[hidden]{display:none}
+.parameter-progress{
+    position:fixed;inset:0;z-index:10000;display:flex;align-items:center;justify-content:center;
+    padding:20px;background:rgba(6,8,12,.82);backdrop-filter:blur(3px);cursor:wait
+}
+.parameter-progress-card{
+    width:min(460px,100%);padding:24px;border:1px solid #596170;border-radius:10px;
+    background:#1b1e25;box-shadow:0 18px 60px rgba(0,0,0,.55);text-align:center
+}
+.parameter-progress-spinner{
+    width:38px;height:38px;margin:0 auto 15px;border:4px solid #414752;
+    border-top-color:#d99b3a;border-radius:50%;animation:parameter-spin .8s linear infinite
+}
+.parameter-progress-title{font-size:20px;font-weight:800;color:#fff;margin-bottom:8px}
+.parameter-progress-text{font-size:14px;line-height:1.45;color:#d5d9df}
+.parameter-progress-warning{margin-top:12px;font-size:13px;font-weight:700;color:#ffbe55}
+body.parameter-busy main{pointer-events:none;user-select:none}
+@keyframes parameter-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.parameter-progress-spinner{animation:none;border-top-color:#d99b3a}}
+
+/* V2.0: alleen het instellingengedeelte; monitoring blijft ongewijzigd. */
+#settings-v2 {margin:12px 0;background:#1b1e25;border:1px solid #30343d;border-radius:9px;padding:14px;}
+#settings-v2 .settings-title h2{font-size:19px;}
+#settings-v2 .settings-title p{margin:5px 0 12px;}
+#settings-v2 .version-badge{font-size:11px;font-weight:500;background:#303743;border-radius:4px;padding:3px 6px;vertical-align:middle;}
+#settings-v2 .settings-nav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;}
+#settings-v2 .settings-nav a{color:#dde3ec;text-decoration:none;border:1px solid #39414d;border-radius:5px;padding:9px 15px;background:#141820;}
+#settings-v2 .settings-nav a:hover,#settings-v2 .settings-nav a:focus-visible{border-color:#dba13b;color:#ffc66a;}
+#settings-v2 .settings-read-row,#settings-v2 .settings-comparison{display:grid;grid-template-columns:minmax(155px,.65fr) repeat(3,minmax(0,1fr));gap:12px;}
+#settings-v2 .settings-read-row{padding:8px 12px 14px;align-items:center;}
+#settings-v2 .settings-group{border:1px solid #343b46;border-radius:6px;margin-top:8px;background:#161a21;scroll-margin-top:12px;}
+#settings-v2 .settings-group>summary{cursor:pointer;padding:12px 14px;font-size:14px;font-weight:650;}
+#settings-v2 .settings-group[open]>summary{border-bottom:1px solid #303743;}
+#settings-v2 .settings-comparison{padding:12px;}
+#settings-v2 .settings-description{padding:8px 4px;}
+#settings-v2 .settings-description p{line-height:1.6;}
+#settings-v2 .settings-pack{min-width:0;}
+#settings-v2 .pack-heading{padding:8px 10px;background:#202730;border-radius:4px;}
+#settings-v2 .bms1>.pack-heading,#settings-v2 .bms1>strong{color:#65d48b;}
+#settings-v2 .bms2>.pack-heading,#settings-v2 .bms2>strong{color:#4fa2ff;}
+#settings-v2 .bms3>.pack-heading,#settings-v2 .bms3>strong{color:#ffb74d;}
+#settings-v2 .param-card{padding:10px;border:1px solid #2b333f;border-radius:5px;margin-bottom:8px;background:#191e26;}
+#settings-v2 .param-card.full{grid-column:auto;}
+#settings-v2 label{display:grid;grid-template-columns:minmax(0,1fr) minmax(80px,.8fr);align-items:center;gap:10px;min-height:40px;margin:6px 0;color:#bec6d2;font-size:12px;}
+#settings-vol .param-card>h3,#settings-balans .param-card>h3{display:none;}
+#settings-v2 input:not([type=hidden]),#settings-v2 select{width:100%;min-width:0;margin-top:0;padding:8px 10px;border:1px solid #3d4654;border-radius:5px;background:#10151c;color:#f1f5fa;font:inherit;font-size:13px;}
+#settings-v2 button{cursor:pointer;}
+#settings-v2 .write{width:100%;margin-top:8px;padding:9px 6px;font-size:12px;border-radius:5px;}
+#settings-v2 .read{padding:7px 10px;}
+#settings-v2 .protocol-readable dl{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:8px 0 14px;}
+#settings-v2 .protocol-readable dt{color:#a9b4c4;}#settings-v2 .protocol-readable dd{margin:0;overflow-wrap:anywhere;}
+#settings-v2 .settings-pack>p.bad{overflow-wrap:anywhere;}
+@media(max-width:950px){ #settings-v2 .settings-comparison,#settings-v2 .settings-read-row{grid-template-columns:repeat(3,minmax(0,1fr));}#settings-v2 .settings-description,#settings-v2 .settings-read-row>div:first-child{grid-column:1/-1;}}
+@media(max-width:600px){ #settings-v2{padding:8px;}#settings-v2 .settings-comparison,#settings-v2 .settings-read-row{grid-template-columns:1fr;}#settings-v2 .settings-nav a{padding:8px;font-size:11px;}}
+
+
+/* Compacte, permanent zichtbare instellingen. */
+#settings-v2{padding:10px;}
+#settings-v2 .settings-comparison,#settings-v2 .settings-read-row{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:6px 8px;}
+#settings-v2 .settings-read-row>div:first-child{display:none;}
+#settings-v2 .settings-title p{margin:3px 0 6px;}
+#settings-v2 .settings-read-row .settings-pack{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+#settings-v2 .settings-read-row p{margin:0;font-size:10px;}
+#settings-v2 .group-title{font-size:13px;margin:0;padding:7px 10px;border-bottom:1px solid #303743;background:#20252e;}
+#settings-v2 .settings-group{margin-top:7px;}
+#settings-v2 .pack-heading{font-size:11px;margin:0 0 3px;padding:3px 6px;background:transparent;}
+#settings-v2 .param-card{padding:5px 8px;margin:0 0 4px;border:0;border-radius:0;background:transparent;}
+#settings-v2 label{min-height:29px;margin:3px 0;gap:8px;grid-template-columns:minmax(0,1fr) minmax(90px,.65fr);}
+#settings-v2 input:not([type=hidden]),#settings-v2 select{padding:5px 8px;font-size:12px;}
+#settings-v2 .write{padding:6px;margin-top:4px;font-size:11px;}
+#settings-v2 .read{padding:5px 8px;font-size:11px;}
+#settings-v2 .param-card p{margin:4px 0;line-height:1.35;}
+#settings-v2 .protocol-readable dl{gap:5px;margin:4px 0;}
+#settings-v2 .protocol-readable h3{display:none;}
+#settings-v2 form[action^="/parameters/limiter-"]{display:grid;grid-template-columns:minmax(0,1fr) 132px;gap:8px;align-items:center;margin:4px 0;}
+#settings-v2 form[action^="/parameters/limiter-"] label{grid-template-columns:minmax(0,1fr) 80px;}
+#settings-v2 form[action^="/parameters/limiter-"] button{margin:0;font-size:10px;}
+#settings-v2 .param-card[style]{margin:0 0 5px!important;}
+@media(max-width:600px){ #settings-v2 .settings-comparison,#settings-v2 .settings-read-row{grid-template-columns:1fr;} }
+
+/* Volgorde van de instellingen: lager cijfer staat hoger. */
+#settings-v2 {
+    display: flex;
+    flex-direction: column;
+}
+
+#settings-stroom      { order: 4; }
+#settings-vol         { order: 2; }
+#settings-balans      { order: 3; }
+#settings-beveiliging { order: 1; }
+#settings-overig      { order: 5; }
+#settings-communicatie { order: 6; }
+
+</style>
 
 </head>
 
 
 <body>
+
+<div id="parameter-progress" class="parameter-progress" hidden role="alertdialog" aria-modal="true" aria-labelledby="parameter-progress-title">
+    <div class="parameter-progress-card">
+        <div class="parameter-progress-spinner" aria-hidden="true"></div>
+        <div id="parameter-progress-title" class="parameter-progress-title">Bezig met BMS-instelling…</div>
+        <div id="parameter-progress-text" class="parameter-progress-text">De waarde wordt geschreven en daarna opnieuw uitgelezen.</div>
+        <div class="parameter-progress-warning">Wacht tot deze melding vanzelf verdwijnt. Wijzig of verstuur ondertussen niets.</div>
+    </div>
+</div>
 
 <main>
 
@@ -3307,7 +3595,7 @@ button {
         <div class="status-row">
 
             <div class="status-name">
-                Vol
+                Volmelding
             </div>
 
             <div
@@ -3323,10 +3611,15 @@ button {
     </div>
 
 
+    <div class="status-row">
+        <div class="status-name" title="Volle capaciteit volgens het BMS">FCC / cycli</div>
+        <div class="status-value" id="{{ key }}_info">–</div>
+    </div>
     <details class="diagnostics"><summary>Diagnostiek</summary>
+<p>FCC: volle capaciteit volgens het BMS. Een volmelding en een FCC-wijziging zijn afzonderlijke gebeurtenissen.</p>
 <p>CAN CCL: niet uitgelezen. De ruwe limiterbits hieronder geven geen numerieke laadstroomlimiet aan.</p>
 <div id="{{ key }}_charge_limiter"></div>
-<div class="info-line" id="{{ key }}_info"></div>
+
 <pre class="decoded-status" id="{{ key }}_decoded"></pre><div id="{{ key }}_status35"></div>
 <div id="{{ key }}_raw_status"></div>
 <div id="{{ key }}_raw44"></div>
@@ -3346,129 +3639,90 @@ button {
 </div>
 
 
-<!-- ======================================================
-     PARAMETERS: EIGEN RS232 PER BMS
-     ====================================================== -->
-
-{% if true %}
-{% set params = all_params.get(bms) %}
-{% set param_error = all_errors.get(bms) %}
-{% set message = all_messages.get(bms) %}
 
 
-<div class="parameter-area">
+
+</div>
+
+{% endfor %}
 
 
-<div class="parameter-heading">
-
-    <div>
-
-        <h2>
-            Parameters
-        </h2>
-
-        <div class="muted">
-            {{ bms }} / eigen RS232-kabel
-        </div>
-
-    </div>
+</div>
 
 
-    <form
-        method="post"
-        action="/parameters/read"
-    >
+<section id="settings-v2" aria-label="BMS instellingen">
+<header class="settings-title"><div><h2>Instellingen <span class="version-badge">V2.1</span></h2><p class="muted">Vergelijk de drie accu’s en sla wijzigingen per BMS op.</p></div></header>
+<div class="settings-read-row"><div class="muted">Laatst uitgelezen</div>{% for bms in ["BMS1","BMS2","BMS3"] %}
+<div class="settings-pack {{ bms|lower }}"><strong>{{ bms }}{% if bms == 'BMS1' %} · master{% endif %}</strong>
+<p class="muted">{{ all_params[bms].read_at if all_params.get(bms) else 'Nog niet gelezen' }}</p>
+<form method="post" action="/parameters/read"><input type="hidden" name="bms" value="{{ bms }}"><button class="read" type="submit">Opnieuw lezen</button></form>
+{% if all_errors.get(bms) %}<p class="bad">{{ all_errors[bms] }}</p>{% endif %}</div>{% endfor %}</div><section class="settings-group" id="settings-stroom"><h3 class="group-title">Laadstroom</h3><div class="settings-comparison">{% for bms in ["BMS1","BMS2","BMS3"] %}{% set params = all_params.get(bms) %}
+<div class="settings-pack {{ bms|lower }}"><h3 class="pack-heading">{{ bms }}{% if bms == 'BMS1' %} · master{% endif %}</h3>{% if params %}<div class="param-card">
+<h3>Laad-overstroom (CHG OC)</h3>
+<p class="muted">Waarschuwing en beveiliging bij te hoge laadstroom.</p>
+<form method="post" action="/parameters/charge-overcurrent">
 <input type="hidden" name="bms" value="{{ bms }}">
+<label>Waarschuwing (A)
+<input name="warning_a" type="number" step="1" min="1" max="220"
+ value="{{ params.charge_overcurrent.warning_a }}" required></label>
+<label>Protect (A)
+<input name="protection_a" type="number" step="1" min="1" max="220"
+ value="{{ params.charge_overcurrent.protection_a }}" required></label>
+<label>Delay (ms)
+<input name="delay_ms" type="number" step="100" min="500" max="25000"
+ value="{{ params.charge_overcurrent.delay_100ms * 100 }}" required></label>
+<button class="write" type="submit">Opslaan en controleren</button>
+</form>
+</div>{% else %}<p class="muted">Nog geen instellingen beschikbaar. Gebruik Opnieuw lezen.</p>{% endif %}{% if params %}<div class="param-card">
+<h3>Charge Current Limiter</h3>
+<p class="muted">Limiterinstellingen van het BMS. De CAN-laadstroomlimiet wordt niet uitgelezen.</p>
+<form method="post" action="/parameters/limiter-start">
+<input type="hidden" name="bms" value="{{ bms }}">
+<input type="hidden" name="payload_address" value="{{ params.limiter_start.payload_address }}">
+<label>Inschakelstroom (A)
+<input name="start_current_a" type="number" step="1" min="5" max="255"
+ value="{{ params.limiter_start.start_current_a }}" required></label>
 
-        <button
-            class="read"
-            type="submit"
-        >
-            Opnieuw lezen
-        </button>
+<button class="write" type="submit">Opslaan en controleren</button>
+</form>
+{% set ls = params.limiter_status %}
+{% if ls.available %}
+<p>Configuratie: <strong>{{ 'Aan' if ls.enabled else 'Uit' }}</strong> · gear <strong>{{ ls.gear|upper }}</strong></p>
 
-    </form>
-
-</div>
-
-
-<details class="param-card" style="margin:8px 0"><summary>Temperatuurinstellingen</summary>
-{% set ex = extra[bms] %}
-{% for group, spec in temp_groups.items() %}
-<h3>{{ spec[2] }}</h3>
-{% if ex.errors.get(group) %}<p class="bad">{{ ex.errors[group] }}</p>{% endif %}
-{% if group in ex.temps %}
-<form method="post" action="/parameters/temperature">
-<input type="hidden" name="bms" value="{{ bms }}"><input type="hidden" name="group" value="{{ group }}">
-{% for label in spec[3] %}{% set row = loop.index0 %}
-{% for field in ['Waarschuwing','Beveiliging','Herstel'] %}
-<label>{{ label }} · {{ field }} (°C)<input type="number" name="t{{ row*3+loop.index0 }}" step="1" min="-40" max="125" value="{{ ex.temps[group][row*3+loop.index0] }}" required></label>
-{% endfor %}{% endfor %}
-<button class="write" type="submit">Schrijven + check</button></form>
-{% else %}<p>Nog niet gelezen; gebruik Opnieuw lezen.</p>{% endif %}
-{% endfor %}</details>
-<details class="param-card" style="margin:8px 0"><summary>Datum en tijd BMS</summary>
-{% set ex = extra[bms] %}
-<p>BMS-klok: {{ ex.clock or 'Nog niet gelezen' }}</p>
-<p class="muted">Momentopname · gelezen {{ ex.get('clock_read_at','–') }}. Synchroniseren gebruikt Nederlandse tijd van de Pi.</p>
-{% if ex.errors.get('clock') %}<p class="bad">{{ ex.errors.clock }}</p>{% endif %}
-<form method="post" action="/parameters/clock">
-<input type="hidden" name="bms" value="{{ bms }}"><input type="hidden" name="mode" value="manual">
-<label>Datum en tijd<input type="datetime-local" name="clock" step="1" min="2000-01-01T00:00" max="2099-12-31T23:59:59" value="{{ ex.clock or '' }}" required></label>
-<button class="write" type="submit">Schrijven + check</button></form>
-<form method="post" action="/parameters/clock">
-<input type="hidden" name="bms" value="{{ bms }}"><input type="hidden" name="mode" value="sync">
-<button class="write" type="submit">Synchroniseer met Pi-tijd</button></form>
-</details>
-
-{% if param_error %}
-
-<div class="bad">
-    {{ param_error }}
-</div>
-
-{% endif %}
-
-
-{% if params %}
-
-
-<div
-    class="muted"
-    style="margin-bottom:5px"
->
-
-    Laatst gelezen:
-    {{ params.read_at }}
-
-</div>
-
-
-<div class="parameter-stack">
-
-
-<!-- CELL OV -->
-
-<div class="param-card">
+<form method="post" action="/parameters/limiter-switch">
+<input type="hidden" name="bms" value="{{ bms }}">
+<label>Limiter aan/uit
+<select name="enabled"><option value="1" {% if ls.enabled %}selected{% endif %}>Aan</option><option value="0" {% if not ls.enabled %}selected{% endif %}>Uit</option></select></label>
+<button class="write" type="submit">Opslaan en controleren</button>
+</form>
+<form method="post" action="/parameters/limiter-gear">
+<input type="hidden" name="bms" value="{{ bms }}">
+<label>Gear
+<select name="gear"><option value="high" {% if ls.gear == 'high' %}selected{% endif %}>High</option><option value="low" {% if ls.gear == 'low' %}selected{% endif %}>Low</option></select></label>
+<button class="write" type="submit">Opslaan en controleren</button>
+</form>
+{% else %}<p>Status nog niet beschikbaar; wacht op een geldige live-uitlezing.</p>{% endif %}
+</div>{% else %}<p class="muted">Nog geen instellingen beschikbaar. Gebruik Opnieuw lezen.</p>{% endif %}</div>{% endfor %}</div></section><section class="settings-group" id="settings-vol"><h3 class="group-title">Volmelding en lage SOC</h3><div class="settings-comparison">{% for bms in ["BMS1","BMS2","BMS3"] %}{% set params = all_params.get(bms) %}
+<div class="settings-pack {{ bms|lower }}"><h3 class="pack-heading">{{ bms }}{% if bms == 'BMS1' %} · master{% endif %}</h3>{% if params %}<div class="param-card full">
 
 <h3>
-    Cell OV
+    Volmelding
 </h3>
 
 <form
     method="post"
-    action="/parameters/cell-ov"
+    action="/parameters/full-charge"
 >
 <input type="hidden" name="bms" value="{{ bms }}">
 
 <label>
-Waarschuwing (V)
+Spanning voor volmelding (V)
 
 <input
-    name="alarm_v"
+    name="voltage_v"
     type="number"
     step="0.001"
-    value="{{ '%.3f'|format(params.cell_ov.alarm_mv / 1000) }}"
+    value="{{ '%.3f'|format(params.full_charge.voltage_mv / 1000) }}"
     required
 >
 
@@ -3476,13 +3730,13 @@ Waarschuwing (V)
 
 
 <label>
-OVP (V)
+Stroomdrempel voor volmelding (mA)
 
 <input
-    name="protection_v"
+    name="current_ma"
     type="number"
-    step="0.001"
-    value="{{ '%.3f'|format(params.cell_ov.protection_mv / 1000) }}"
+    step="1"
+    value="{{ params.full_charge.current_ma }}"
     required
 >
 
@@ -3490,27 +3744,13 @@ OVP (V)
 
 
 <label>
-Release (V)
+Lage-SOC-waarschuwing (%)
 
 <input
-    name="release_v"
+    name="low_soc"
     type="number"
-    step="0.001"
-    value="{{ '%.3f'|format(params.cell_ov.release_mv / 1000) }}"
-    required
->
-
-</label>
-
-
-<label>
-Delay (s)
-
-<input
-    name="delay_s"
-    type="number"
-    step="0.1"
-    value="{{ '%.1f'|format(params.cell_ov.delay_100ms / 10) }}"
+    step="1"
+    value="{{ params.full_charge.low_soc }}"
     required
 >
 
@@ -3521,263 +3761,12 @@ Delay (s)
     class="write"
     type="submit"
 >
-    Schrijven + check
+    Opslaan en controleren
 </button>
 
 </form>
-
-</div>
-
-
-<!-- PACK OV -->
-
-<div class="param-card">
-
-<h3>
-    Pack OV
-</h3>
-
-<form
-    method="post"
-    action="/parameters/pack-ov"
->
-<input type="hidden" name="bms" value="{{ bms }}">
-
-<label>
-Waarschuwing (V)
-
-<input
-    name="alarm_v"
-    type="number"
-    step="0.001"
-    value="{{ '%.3f'|format(params.pack_ov.alarm_mv / 1000) }}"
-    required
->
-
-</label>
-
-
-<label>
-OVP (V)
-
-<input
-    name="protection_v"
-    type="number"
-    step="0.001"
-    value="{{ '%.3f'|format(params.pack_ov.protection_mv / 1000) }}"
-    required
->
-
-</label>
-
-
-<label>
-Release (V)
-
-<input
-    name="release_v"
-    type="number"
-    step="0.001"
-    value="{{ '%.3f'|format(params.pack_ov.release_mv / 1000) }}"
-    required
->
-
-</label>
-
-
-<label>
-Delay (s)
-
-<input
-    name="delay_s"
-    type="number"
-    step="0.1"
-    value="{{ '%.1f'|format(params.pack_ov.delay_100ms / 10) }}"
-    required
->
-
-</label>
-
-
-<button
-    class="write"
-    type="submit"
->
-    Schrijven + check
-</button>
-
-</form>
-
-</div>
-
-
-<!-- CELL UV -->
-
-<div class="param-card">
-
-<h3>
-    Cell UV
-</h3>
-
-<form
-    method="post"
-    action="/parameters/cell-uv"
->
-<input type="hidden" name="bms" value="{{ bms }}">
-
-<label>
-Waarschuwing (V)
-
-<input
-    name="alarm_v"
-    type="number"
-    step="0.001"
-    value="{{ '%.3f'|format(params.cell_uv.alarm_mv / 1000) }}"
-    required
->
-
-</label>
-
-
-<label>
-UVP (V)
-
-<input
-    name="protection_v"
-    type="number"
-    step="0.001"
-    value="{{ '%.3f'|format(params.cell_uv.protection_mv / 1000) }}"
-    required
->
-
-</label>
-
-
-<label>
-Release (V)
-
-<input
-    name="release_v"
-    type="number"
-    step="0.001"
-    value="{{ '%.3f'|format(params.cell_uv.release_mv / 1000) }}"
-    required
->
-
-</label>
-
-
-<label>
-Delay (s)
-
-<input
-    name="delay_s"
-    type="number"
-    step="0.1"
-    value="{{ '%.1f'|format(params.cell_uv.delay_100ms / 10) }}"
-    required
->
-
-</label>
-
-
-<button
-    class="write"
-    type="submit"
->
-    Schrijven + check
-</button>
-
-</form>
-
-</div>
-
-
-<!-- PACK UV -->
-
-<div class="param-card">
-
-<h3>
-    Pack UV
-</h3>
-
-<form
-    method="post"
-    action="/parameters/pack-uv"
->
-<input type="hidden" name="bms" value="{{ bms }}">
-
-<label>
-Waarschuwing (V)
-
-<input
-    name="alarm_v"
-    type="number"
-    step="0.001"
-    value="{{ '%.3f'|format(params.pack_uv.alarm_mv / 1000) }}"
-    required
->
-
-</label>
-
-
-<label>
-UVP (V)
-
-<input
-    name="protection_v"
-    type="number"
-    step="0.001"
-    value="{{ '%.3f'|format(params.pack_uv.protection_mv / 1000) }}"
-    required
->
-
-</label>
-
-
-<label>
-Release (V)
-
-<input
-    name="release_v"
-    type="number"
-    step="0.001"
-    value="{{ '%.3f'|format(params.pack_uv.release_mv / 1000) }}"
-    required
->
-
-</label>
-
-
-<label>
-Delay (s)
-
-<input
-    name="delay_s"
-    type="number"
-    step="0.1"
-    value="{{ '%.1f'|format(params.pack_uv.delay_100ms / 10) }}"
-    required
->
-
-</label>
-
-
-<button
-    class="write"
-    type="submit"
->
-    Schrijven + check
-</button>
-
-</form>
-
-</div>
-
-
-<!-- BALANCEREN -->
-
-<div class="param-card">
+</div>{% else %}<p class="muted">Nog geen instellingen beschikbaar. Gebruik Opnieuw lezen.</p>{% endif %}</div>{% endfor %}</div></section><section class="settings-group" id="settings-balans"><h3 class="group-title">Balanceren</h3><div class="settings-comparison">{% for bms in ["BMS1","BMS2","BMS3"] %}{% set params = all_params.get(bms) %}
+<div class="settings-pack {{ bms|lower }}"><h3 class="pack-heading">{{ bms }}{% if bms == 'BMS1' %} · master{% endif %}</h3>{% if params %}<div class="param-card">
 
 <h3>
     Balanceren
@@ -3821,20 +3810,331 @@ Delta (mV)
     class="write"
     type="submit"
 >
-    Schrijven + check
+    Opslaan en controleren
+</button>
+
+</form>
+
+</div>{% else %}<p class="muted">Nog geen instellingen beschikbaar. Gebruik Opnieuw lezen.</p>{% endif %}</div>{% endfor %}</div></section><section class="settings-group" id="settings-beveiliging"><h3 class="group-title">Spanningsgrenzen · waarschuwingen en beveiliging</h3><div class="settings-comparison">{% for bms in ["BMS1","BMS2","BMS3"] %}{% set params = all_params.get(bms) %}
+<div class="settings-pack {{ bms|lower }}"><h3 class="pack-heading">{{ bms }}{% if bms == 'BMS1' %} · master{% endif %}</h3>{% if params %}
+<div class="param-card">
+
+<h3>
+    Accu · bovengrens
+</h3>
+
+<form
+    method="post"
+    action="/parameters/pack-ov"
+>
+<input type="hidden" name="bms" value="{{ bms }}">
+
+<label>
+Waarschuwing (V) / Pack OV
+
+<input
+    name="alarm_v"
+    type="number"
+    step="0.001"
+    value="{{ '%.3f'|format(params.pack_ov.alarm_mv / 1000) }}"
+    required
+>
+
+</label>
+
+
+<label>
+Beveiliging (V) / Pack OVP
+
+<input
+    name="protection_v"
+    type="number"
+    step="0.001"
+    value="{{ '%.3f'|format(params.pack_ov.protection_mv / 1000) }}"
+    required
+>
+
+</label>
+
+
+<label>
+Herstel (V)
+
+<input
+    name="release_v"
+    type="number"
+    step="0.001"
+    value="{{ '%.3f'|format(params.pack_ov.release_mv / 1000) }}"
+    required
+>
+
+</label>
+
+
+<label>
+Vertraging (s)
+
+<input
+    name="delay_s"
+    type="number"
+    step="0.1"
+    value="{{ '%.1f'|format(params.pack_ov.delay_100ms / 10) }}"
+    required
+>
+
+</label>
+
+
+<button
+    class="write"
+    type="submit"
+>
+    Opslaan en controleren
 </button>
 
 </form>
 
 </div>
-
-
-<!-- SLEEP -->
-
 <div class="param-card">
 
 <h3>
-    Sleep
+    Cel · bovengrens
+</h3>
+
+<form
+    method="post"
+    action="/parameters/cell-ov"
+>
+<input type="hidden" name="bms" value="{{ bms }}">
+
+<label>
+Waarschuwing (V) / Cel OV
+
+<input
+    name="alarm_v"
+    type="number"
+    step="0.001"
+    value="{{ '%.3f'|format(params.cell_ov.alarm_mv / 1000) }}"
+    required
+>
+
+</label>
+
+
+<label>
+Beveiliging (V) / Cel OVP
+
+<input
+    name="protection_v"
+    type="number"
+    step="0.001"
+    value="{{ '%.3f'|format(params.cell_ov.protection_mv / 1000) }}"
+    required
+>
+
+</label>
+
+
+<label>
+Herstel (V)
+
+<input
+    name="release_v"
+    type="number"
+    step="0.001"
+    value="{{ '%.3f'|format(params.cell_ov.release_mv / 1000) }}"
+    required
+>
+
+</label>
+
+
+<label>
+Vertraging (s)
+
+<input
+    name="delay_s"
+    type="number"
+    step="0.1"
+    value="{{ '%.1f'|format(params.cell_ov.delay_100ms / 10) }}"
+    required
+>
+
+</label>
+
+
+<button
+    class="write"
+    type="submit"
+>
+    Opslaan en controleren
+</button>
+
+</form>
+
+</div>
+<div class="param-card">
+
+<h3>
+    Accu · ondergrens
+</h3>
+
+<form
+    method="post"
+    action="/parameters/pack-uv"
+>
+<input type="hidden" name="bms" value="{{ bms }}">
+
+<label>
+Waarschuwing (V)
+
+<input
+    name="alarm_v"
+    type="number"
+    step="0.001"
+    value="{{ '%.3f'|format(params.pack_uv.alarm_mv / 1000) }}"
+    required
+>
+
+</label>
+
+
+<label>
+Beveiliging (V)
+
+<input
+    name="protection_v"
+    type="number"
+    step="0.001"
+    value="{{ '%.3f'|format(params.pack_uv.protection_mv / 1000) }}"
+    required
+>
+
+</label>
+
+
+<label>
+Herstel (V)
+
+<input
+    name="release_v"
+    type="number"
+    step="0.001"
+    value="{{ '%.3f'|format(params.pack_uv.release_mv / 1000) }}"
+    required
+>
+
+</label>
+
+
+<label>
+Vertraging (s)
+
+<input
+    name="delay_s"
+    type="number"
+    step="0.1"
+    value="{{ '%.1f'|format(params.pack_uv.delay_100ms / 10) }}"
+    required
+>
+
+</label>
+
+
+<button
+    class="write"
+    type="submit"
+>
+    Opslaan en controleren
+</button>
+
+</form>
+
+</div>
+<div class="param-card">
+
+<h3>
+    Cel · ondergrens
+</h3>
+
+<form
+    method="post"
+    action="/parameters/cell-uv"
+>
+<input type="hidden" name="bms" value="{{ bms }}">
+
+<label>
+Waarschuwing (V)
+
+<input
+    name="alarm_v"
+    type="number"
+    step="0.001"
+    value="{{ '%.3f'|format(params.cell_uv.alarm_mv / 1000) }}"
+    required
+>
+
+</label>
+
+
+<label>
+Beveiliging (V)
+
+<input
+    name="protection_v"
+    type="number"
+    step="0.001"
+    value="{{ '%.3f'|format(params.cell_uv.protection_mv / 1000) }}"
+    required
+>
+
+</label>
+
+
+<label>
+Herstel (V)
+
+<input
+    name="release_v"
+    type="number"
+    step="0.001"
+    value="{{ '%.3f'|format(params.cell_uv.release_mv / 1000) }}"
+    required
+>
+
+</label>
+
+
+<label>
+Vertraging (s)
+
+<input
+    name="delay_s"
+    type="number"
+    step="0.1"
+    value="{{ '%.1f'|format(params.cell_uv.delay_100ms / 10) }}"
+    required
+>
+
+</label>
+
+
+<button
+    class="write"
+    type="submit"
+>
+    Opslaan en controleren
+</button>
+
+</form>
+
+</div>
+{% else %}<p class="muted">Nog geen instellingen beschikbaar. Gebruik Opnieuw lezen.</p>{% endif %}</div>{% endfor %}</div></section>
+<section class="settings-group" id="settings-overig"><h3 class="group-title">Temperatuur, energiestand en klok</h3><div class="settings-comparison">{% for bms in ["BMS1","BMS2","BMS3"] %}{% set params = all_params.get(bms) %}
+<div class="settings-pack {{ bms|lower }}"><h3 class="pack-heading">{{ bms }}{% if bms == 'BMS1' %} · master{% endif %}</h3>{% if params %}<div class="param-card">
+
+<h3>
+    Energiestand (Sleep)
 </h3>
 
 <form
@@ -3844,7 +4144,7 @@ Delta (mV)
 <input type="hidden" name="bms" value="{{ bms }}">
 
 <label>
-Celspanning (V)
+Spanningsdrempel (V)
 
 <input
     name="voltage_v"
@@ -3858,7 +4158,7 @@ Celspanning (V)
 
 
 <label>
-Delay (min)
+Vertraging (min)
 
 <input
     name="delay_min"
@@ -3875,107 +4175,55 @@ Delay (min)
     class="write"
     type="submit"
 >
-    Schrijven + check
+    Opslaan en controleren
 </button>
 
 </form>
 
-</div>
+</div>{% else %}<p class="muted">Nog geen instellingen beschikbaar. Gebruik Opnieuw lezen.</p>{% endif %}<section class="param-card" style="margin:8px 0"><h3 class="group-title">Temperatuurinstellingen</h3>
+{% set ex = extra[bms] %}
+{% for group, spec in temp_groups.items() %}
+<h3>{{ spec[2] }}</h3>
+{% if ex.errors.get(group) %}<p class="bad">{{ ex.errors[group] }}</p>{% endif %}
+{% if group in ex.temps %}
+<form method="post" action="/parameters/temperature">
+<input type="hidden" name="bms" value="{{ bms }}"><input type="hidden" name="group" value="{{ group }}">
+{% for label in spec[3] %}{% set row = loop.index0 %}
+{% for field in ['Waarschuwing','Beveiliging','Herstel'] %}
+<label>{{ label }} · {{ field }} (°C)<input type="number" name="t{{ row*3+loop.index0 }}" step="1" min="-40" max="125" value="{{ ex.temps[group][row*3+loop.index0] }}" required></label>
+{% endfor %}{% endfor %}
+<button class="write" type="submit">Opslaan en controleren</button></form>
+{% else %}<p>Nog niet gelezen; gebruik Opnieuw lezen.</p>{% endif %}
+{% endfor %}</section>
+<section class="param-card" style="margin:8px 0"><h3 class="group-title">Datum en tijd BMS</h3>
+{% set ex = extra[bms] %}
+<p>BMS-klok: {{ ex.clock or 'Nog niet gelezen' }}</p>
+<p class="muted">Momentopname · gelezen {{ ex.get('clock_read_at','–') }}. Synchroniseren gebruikt Nederlandse tijd van de Pi.</p>
+{% if ex.errors.get('clock') %}<p class="bad">{{ ex.errors.clock }}</p>{% endif %}
+<form method="post" action="/parameters/clock">
+<input type="hidden" name="bms" value="{{ bms }}"><input type="hidden" name="mode" value="manual">
+<label>Datum en tijd<input type="datetime-local" name="clock" step="1" min="2000-01-01T00:00" max="2099-12-31T23:59:59" value="{{ ex.clock or '' }}" required></label>
+<button class="write" type="submit">Opslaan en controleren</button></form>
+<form method="post" action="/parameters/clock">
+<input type="hidden" name="bms" value="{{ bms }}"><input type="hidden" name="mode" value="sync">
+<button class="write" type="submit">Synchroniseer met Pi-tijd</button></form>
+</section>
 
+</div>{% endfor %}</div></section><section class="settings-group" id="settings-communicatie"><h3 class="group-title">Communicatie</h3><div class="settings-comparison">{% for bms in ["BMS1","BMS2","BMS3"] %}{% set params = all_params.get(bms) %}
+<div class="settings-pack {{ bms|lower }}"><h3 class="pack-heading">{{ bms }}{% if bms == 'BMS1' %} · master{% endif %}</h3>{% if params %}<div class="param-card protocol-readable">
+<h3>Communicatie</h3>
+<dl><dt>Omvormer (CAN)</dt><dd>{{ params.protocols.can_name.split(' (')[0] }}</dd>
+<dt>RS485</dt><dd>{{ params.protocols.rs485_name.split(' (')[0] }}</dd>
+<dt>Uitlezen</dt><dd>RS232 via USB</dd>
+<dt>Protocolkeuze</dt><dd>{{ 'Handmatig' if params.protocols.selection_raw == 1 else params.protocols.selection_name }}</dd></dl>
+<span class="muted">Alleen uitlezen</span></div>{% else %}<p class="muted">Nog geen instellingen beschikbaar. Gebruik Opnieuw lezen.</p>{% endif %}</div>{% endfor %}</div></section></section>
 
-<!-- FULL CHARGE -->
-
-<div class="param-card full">
-
-<h3>
-    Full Charge / SOC
-</h3>
-
-<form
-    method="post"
-    action="/parameters/full-charge"
->
-<input type="hidden" name="bms" value="{{ bms }}">
-
-<label>
-Voltage (V)
-
-<input
-    name="voltage_v"
-    type="number"
-    step="0.001"
-    value="{{ '%.3f'|format(params.full_charge.voltage_mv / 1000) }}"
-    required
->
-
-</label>
-
-
-<label>
-Current (mA)
-
-<input
-    name="current_ma"
-    type="number"
-    step="1"
-    value="{{ params.full_charge.current_ma }}"
-    required
->
-
-</label>
-
-
-<label>
-Low SOC (%)
-
-<input
-    name="low_soc"
-    type="number"
-    step="1"
-    value="{{ params.full_charge.low_soc }}"
-    required
->
-
-</label>
-
-
-<button
-    class="write"
-    type="submit"
->
-    Schrijven + check
-</button>
-
-</form>
-
-</div>
-
-
-</div>
-
-{% endif %}
-
-
-</div>
-
-
-{% endif %}
-
-
-</div>
-
-{% endfor %}
-
-
-</div>
-
-
-<details id="event-log"><summary>Statuswijzigingen · bytes &amp; bits</summary>
-<p>Waarnemingen, geen bewezen oorzaken. Byte-index vanaf 0. Eerste waarneming geldt sinds dit log bestaat.</p>
+<details id="event-log"><summary>Logboek en JSON-export</summary>
+<p>Volmeldingen, waarschuwingen, instellingen en FCC-wijzigingen. Balansstatus wordt bij de metingen bewaard.</p>
 <form action="/api/events/export" method="get" style="display:flex;flex-wrap:wrap;align-items:end;gap:10px">
 <label>Periode<br><select name="period" id="export-period" style="padding:8px;background:#12151b;color:#e5e7eb;border:1px solid #555;border-radius:5px">
 <option value="all">Alles wat bewaard is</option>
-<option value="1h">Afgelopen 1 uur</option><option value="6h">Afgelopen 6 uur</option><option value="12h">Afgelopen 12 uur</option>
+<option value="1h" selected>Afgelopen 1 uur</option><option value="6h">Afgelopen 6 uur</option><option value="12h">Afgelopen 12 uur</option>
 <option value="24h">Afgelopen 24 uur</option><option value="today">Vandaag</option>
 <option value="yesterday">Gisteren</option><option value="custom">Zelf kiezen</option>
 </select></label>
@@ -3985,7 +4233,7 @@ Low SOC (%)
 </span>
 <button class="read" type="submit">Download JSON</button>
 </form>
-<p class="muted">Nederlandse tijd · alleen bewaarde gebeurtenissen · maximaal 7 dagen / 10.000 gebeurtenissen. Een lege periode levert een leeg logbestand op.</p>
+<p class="muted">Metingen elke 5 seconden · 72 uur bewaard. Gebeurtenissen: 30 dagen, maximaal 2.000. FCC/cycli: 1 jaar, maximaal 3.000. Export bevat alleen wat nog bewaard is.</p>
 <p id="event-log-state">Log laden…</p><div id="event-list"></div></details></main>
 
 
@@ -3994,6 +4242,49 @@ Low SOC (%)
 (function () {
 
 "use strict";
+
+// Scrollpositie na opslaan/lezen; alle instellingen zijn altijd zichtbaar.
+const settingsStateKey='pace-settings-v21';
+try{const y=sessionStorage.getItem(settingsStateKey);if(y!==null){sessionStorage.removeItem(settingsStateKey);requestAnimationFrame(()=>window.scrollTo(0,Number(y)));}}catch(e){}
+function saveSettingsView(){try{sessionStorage.setItem(settingsStateKey,String(window.scrollY));}catch(e){}}
+const parameterProgress=document.getElementById('parameter-progress');
+let parameterSubmitBusy=false;
+
+function clearParameterProgress(){
+    parameterSubmitBusy=false;
+    document.body.classList.remove('parameter-busy');
+    document.body.removeAttribute('aria-busy');
+    parameterProgress.hidden=true;
+    document.querySelector('main').inert=false;
+}
+
+function showParameterProgress(form){
+    if(parameterSubmitBusy)return false;
+    parameterSubmitBusy=true;
+    const bms=form.querySelector('input[name="bms"]')?.value || 'BMS';
+    const submitter=document.activeElement && document.activeElement.form===form ? document.activeElement : null;
+    const isRead=form.action.endsWith('/parameters/read');
+    const action=isRead?'Parameters lezen en scherm vernieuwen':'Instelling schrijven, controleren en scherm vernieuwen';
+    document.getElementById('parameter-progress-title').textContent=bms+' · bezig…';
+    document.getElementById('parameter-progress-text').textContent=action+'. Dit kan enkele seconden duren.';
+    if(submitter && submitter.tagName==='BUTTON')submitter.textContent='Bezig…';
+    document.body.classList.add('parameter-busy');
+    document.body.setAttribute('aria-busy','true');
+    parameterProgress.hidden=false;
+    document.querySelector('main').inert=true;
+    return true;
+}
+
+for(const form of document.querySelectorAll('form[method="post"][action^="/parameters/"]')){
+    form.addEventListener('submit',event=>{
+        if(!showParameterProgress(form))event.preventDefault();
+        else saveSettingsView(true);
+    });
+}
+
+// A page restored with the browser Back button must never retain the old busy screen.
+window.addEventListener('pageshow',clearParameterProgress);
+
 const exportPeriod=document.getElementById('export-period');
 exportPeriod.addEventListener('change',()=>{
     const custom=exportPeriod.value==='custom';
@@ -4298,8 +4589,7 @@ function updateBms(
     setText(
         key + "_info",
 
-        "FCC "
-        + fmt(
+        fmt(
             data.full_capacity_ah,
             2
         )
@@ -4330,7 +4620,7 @@ async function refreshEvents(){
     try{
         const r=await fetch('/api/events',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);
         const data=await r.json();
-        document.getElementById('event-log-state').textContent=data.error?'Logfout: '+data.error:'Laatste '+data.events.length+' gebeurtenissen · volledige export tot 10.000 / 7 dagen';
+        document.getElementById('event-log-state').textContent=data.error?'Logfout: '+data.error:'Laatste '+data.events.length+' gebeurtenissen';
         const version=JSON.stringify(data.events.map(e=>e.id));if(version===eventVersion)return;eventVersion=version;
         const list=document.getElementById('event-list');list.replaceChildren();
         for(const e of data.events){
@@ -4675,6 +4965,119 @@ def web_write_balancing():
 
     return redirect(
         url_for("index")
+    )
+
+
+def read_limiter_status_fresh():
+    bms = current_bms()
+    address = next(a for a, name in BMS_ADDRESSES.items() if name == bms)
+    payload = decode_frame(transact(build_request(address, 0x44), wait=0.30))
+    status = parse_status(payload)
+    snapshot = {
+        "control_raw": f"0x{status['control']:02X}",
+        "instructions_raw": f"0x{status['instructions']:02X}",
+    }
+    return limiter_status_from_snapshot(snapshot)
+
+
+@app.route("/parameters/charge-overcurrent", methods=["POST"])
+def web_write_charge_overcurrent():
+    bms = current_bms()
+    try:
+        warning_a = int(request.form["warning_a"])
+        protection_a = int(request.form["protection_a"])
+        delay_ms = int(request.form["delay_ms"])
+        if not (1 <= warning_a <= 220 and 1 <= protection_a <= 220):
+            raise ValueError("CHG OC moet 1..220 A zijn")
+        if warning_a > protection_a:
+            raise ValueError("Waarschuwing mag niet hoger zijn dan Protect")
+        if not (500 <= delay_ms <= 25000 and delay_ms % 100 == 0):
+            raise ValueError("Delay moet 500..25000 ms zijn in stappen van 100 ms")
+        wanted = {
+            "warning_a": warning_a,
+            "protection_a": protection_a,
+            "delay_100ms": delay_ms // 100,
+        }
+        with serial_locks[bms]:
+            before = parse_charge_overcurrent(param_request(0xD9))
+            write_charge_overcurrent(warning_a, protection_a, delay_ms // 100)
+            time.sleep(0.40)
+            after = parse_charge_overcurrent(param_request(0xD9))
+        if after != wanted:
+            raise RuntimeError(f"Teruglezing wijkt af: {after}")
+        with cache_lock:
+            if parameter_cache.get(bms):
+                parameter_cache[bms]["charge_overcurrent"] = after
+        log_setting_write(bms, "charge_overcurrent", before, after)
+        last_action_message[bms] = "CHG OC WRITE OK"
+    except Exception as exc:
+        last_action_message[bms] = f"CHG OC WRITE FOUT: {exc}"
+    return redirect(url_for("index"))
+
+
+@app.route("/parameters/limiter-start", methods=["POST"])
+def web_write_limiter_start():
+    bms = current_bms()
+    try:
+        start_current_a = int(request.form["start_current_a"])
+        payload_address = int(request.form["payload_address"])
+        if not 5 <= start_current_a <= 255:
+            raise ValueError("Limiter-startstroom moet 5..255 A zijn")
+        if not 0 <= payload_address <= 255:
+            raise ValueError("Ongeldig lokaal payload-adres")
+        with serial_locks[bms]:
+            before = parse_limiter_start(param_request(0xED))
+            write_limiter_start(start_current_a, payload_address)
+            time.sleep(0.40)
+            after = parse_limiter_start(param_request(0xED))
+        if after["start_current_a"] != start_current_a:
+            raise RuntimeError(f"Teruglezing wijkt af: {after}")
+        with cache_lock:
+            if parameter_cache.get(bms):
+                parameter_cache[bms]["limiter_start"] = after
+        log_setting_write(bms, "limiter_start", before, after)
+        last_action_message[bms] = f"Limiter-startstroom WRITE OK · {start_current_a} A"
+    except Exception as exc:
+        last_action_message[bms] = f"Limiter-startstroom WRITE FOUT: {exc}"
+    return redirect(url_for("index"))
+
+
+def update_limiter_switch(command, expected_field, expected_value, label):
+    bms = current_bms()
+    try:
+        with serial_locks[bms]:
+            before = read_limiter_status_fresh()
+            write_limiter_switch(command)
+            time.sleep(0.50)
+            after = read_limiter_status_fresh()
+        if after.get(expected_field) != expected_value:
+            raise RuntimeError(f"Statuscontrole wijkt af: {after}")
+        with cache_lock:
+            if parameter_cache.get(bms):
+                parameter_cache[bms]["limiter_status"] = after
+        log_setting_write(bms, label, before, after)
+        last_action_message[bms] = f"{label} WRITE OK"
+    except Exception as exc:
+        last_action_message[bms] = f"{label} WRITE FOUT: {exc}"
+    return redirect(url_for("index"))
+
+
+@app.route("/parameters/limiter-switch", methods=["POST"])
+def web_write_limiter_switch():
+    enabled = request.form.get("enabled") == "1"
+    return update_limiter_switch(
+        0x0B if enabled else 0x0A, "enabled", enabled, "Charge Current Limiter"
+    )
+
+
+@app.route("/parameters/limiter-gear", methods=["POST"])
+def web_write_limiter_gear():
+    gear = request.form.get("gear")
+    if gear not in ("high", "low"):
+        last_action_message[current_bms()] = "Limiter gear WRITE FOUT: onbekende gear"
+        return redirect(url_for("index"))
+    return update_limiter_switch(
+        0x08 if gear == "high" else 0x09, "gear", gear, "Limiter gear"
     )
 
 
@@ -5196,8 +5599,7 @@ def web_write_pack_ov():
 def setup_mqtt():
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
                          client_id="pace-bmsrs232", protocol=mqtt.MQTTv5)
-    if MQTT_USER:
-        client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
+    client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
     client.will_set(GLOBAL_AVAILABILITY, payload="offline", qos=1, retain=True)
     def on_connect(client, userdata, flags, reason_code, properties):
         print(f"MQTT connect: {reason_code}", flush=True)
@@ -5221,7 +5623,24 @@ def setup_mqtt():
 
 # Persistence uses the script directory, independent of systemd WorkingDirectory.
 HISTORY_PATH = Path(os.environ.get('PACE_HISTORY_DB', str(Path(__file__).resolve().with_name('pace_history.sqlite3'))))
-HISTORY_SECONDS = 7200
+CHART_HISTORY_SECONDS = 7200
+SAMPLE_RETENTION_SECONDS = 3 * 86400
+EVENT_RETENTION_SECONDS = 30 * 86400
+CAPACITY_RETENTION_SECONDS = 365 * 86400
+EVENT_LIMIT = 2000
+CAPACITY_EVENT_LIMIT = 3000
+HISTORY_SCHEMA_VERSION = 2
+# Derived values and raw bytes are not repeated in each five-second sample.
+SAMPLE_FIELDS = (
+    'bms', 'timestamp', 'soc', 'remaining_capacity_ah', 'full_capacity_ah',
+    'cycle_count', 'current', 'voltage', 'cells', 'temperatures',
+    'fully_charged', 'charge_mosfet', 'discharge_mosfet',
+    'alarm', 'protection', 'fault', 'balancing_cells',
+)
+SAMPLE_JSON_FIELDS = ('cells', 'temperatures', 'balancing_cells')
+SAMPLE_SQL_FIELDS = tuple('ts' if k == 'timestamp' else k for k in SAMPLE_FIELDS)
+HISTORY_PRUNE_INTERVAL = 3600
+history_last_prune = 0.0
 HISTORY_INTERVAL = 5
 history_lock = threading.RLock()
 history_db = None
@@ -5238,6 +5657,57 @@ def delta_threshold(address):
     return 30, 'fallback; actuele parameter niet beschikbaar'
 
 
+def compact_measurement(key, value):
+    if value is None:
+        return None
+    if key in ('cells', 'temperatures'):
+        return [round(float(v), 3 if key == 'cells' else 2) for v in value]
+    if isinstance(value, float):
+        return round(value, {'timestamp': 3, 'soc': 4, 'voltage': 3}.get(key, 2))
+    return value
+
+
+def prune_history(force=False):
+    """Run inside history_lock and the caller's database transaction."""
+    global history_last_prune
+    clock = time.monotonic()
+    if not force and clock - history_last_prune < HISTORY_PRUNE_INTERVAL:
+        return
+    cutoff = time.time()
+    history_db.execute('DELETE FROM samples WHERE ts < ?', (cutoff-SAMPLE_RETENTION_SECONDS,))
+    for capacity, days, limit in ((False, EVENT_RETENTION_SECONDS, EVENT_LIMIT),
+                                  (True, CAPACITY_RETENTION_SECONDS, CAPACITY_EVENT_LIMIT)):
+        condition = "kind IN ('capacity','capacity_baseline')" if capacity else "kind NOT IN ('capacity','capacity_baseline')"
+        history_db.execute('DELETE FROM status_events WHERE '+condition+' AND ts < ?', (cutoff-days,))
+        history_db.execute('DELETE FROM status_events WHERE '+condition+
+            ' AND id IN (SELECT id FROM status_events WHERE '+condition+
+            ' ORDER BY id DESC LIMIT -1 OFFSET ?)', (limit,))
+    history_last_prune = clock
+
+
+def compact_event_detail(kind, detail):
+    result = dict(detail)
+    for key in ('recent_parameters', 'decoded_after', 'note'):
+        result.pop(key, None)
+    if kind in ('status', 'baseline'):
+        for side in ('before', 'after'):
+            if result.get(side):
+                result[side] = {k: v for k, v in result[side].items()
+                                if k not in ('design_capacity_ah', 'soh', 'temperatures')}
+    return result
+
+
+def parameter_log_values(data):
+    values = {k: dict(v) for k,v in data.items() if k != 'read_at'}
+    if 'limiter_status' in values:
+        values['limiter_status'] = {k: v for k,v in values['limiter_status'].items()
+                                   if k in ('enabled', 'gear')}
+    if 'protocols' in values:
+        values['protocols'] = {k:v for k,v in values['protocols'].items()
+                              if k in ('can_raw', 'rs485_raw', 'selection_raw')}
+    return values
+
+
 def init_history():
     global history_db
     with history_lock:
@@ -5245,6 +5715,27 @@ def init_history():
         history_db.execute('PRAGMA journal_mode=WAL')
         history_db.execute('PRAGMA synchronous=FULL')
         history_db.execute('CREATE TABLE IF NOT EXISTS samples (bms TEXT NOT NULL, ts REAL NOT NULL, soc REAL, current REAL, voltage REAL, PRIMARY KEY (bms, ts))')
+        # Breid een bestaande database ter plaatse uit; de grafiekhistorie blijft behouden.
+        sample_columns = {
+            'remaining_capacity_ah': 'REAL', 'full_capacity_ah': 'REAL',
+            'design_capacity_ah': 'REAL', 'soh': 'REAL', 'cycle_count': 'INTEGER',
+            'power': 'REAL', 'min_v': 'REAL', 'max_v': 'REAL',
+            'min_cell': 'INTEGER', 'max_cell': 'INTEGER', 'delta_mv': 'INTEGER',
+            'cells': 'TEXT', 'temperatures': 'TEXT', 'charging': 'INTEGER',
+            'fully_charged': 'INTEGER', 'charge_mosfet': 'TEXT',
+            'discharge_mosfet': 'TEXT', 'alarm': 'TEXT', 'protection': 'TEXT',
+            'fault': 'TEXT', 'balancing_cells': 'TEXT',
+            'high_warning_cells': 'TEXT', 'protection1_raw': 'TEXT',
+            'protection2_raw': 'TEXT', 'instructions_raw': 'TEXT',
+            'control_raw': 'TEXT', 'balance1_raw': 'TEXT', 'balance2_raw': 'TEXT',
+            'warning1_raw': 'TEXT', 'warning2_raw': 'TEXT', 'raw44': 'TEXT',
+        }
+        existing_columns = {
+            row[1] for row in history_db.execute('PRAGMA table_info(samples)')
+        }
+        for name, sql_type in sample_columns.items():
+            if name not in existing_columns:
+                history_db.execute(f'ALTER TABLE samples ADD COLUMN {name} {sql_type}')
         history_db.execute('CREATE TABLE IF NOT EXISTS status_events (id INTEGER PRIMARY KEY,ts REAL,bms TEXT,kind TEXT,detail TEXT)')
         history_db.execute('CREATE TABLE IF NOT EXISTS status_baselines (bms TEXT PRIMARY KEY,raw TEXT,context TEXT)')
         history_db.execute('CREATE TABLE IF NOT EXISTS parameter_baseline (id INTEGER PRIMARY KEY,value TEXT)')
@@ -5252,8 +5743,36 @@ def init_history():
         history_db.execute("INSERT OR IGNORE INTO parameter_baselines SELECT 'BMS1',value FROM parameter_baseline WHERE id=1")
         history_db.execute('CREATE TABLE IF NOT EXISTS capacity_baselines (bms TEXT PRIMARY KEY,value TEXT)')
         history_db.execute('CREATE TABLE IF NOT EXISTS observed_bits (bms TEXT,offset INTEGER,bit INTEGER,value INTEGER,PRIMARY KEY(bms,offset,bit,value))')
-        history_db.execute('DELETE FROM samples WHERE ts < ?', (time.time()-HISTORY_SECONDS,))
+        history_db.execute('CREATE INDEX IF NOT EXISTS samples_ts ON samples(ts)')
+        history_db.execute('CREATE INDEX IF NOT EXISTS events_ts ON status_events(ts)')
+        history_db.execute('CREATE TABLE IF NOT EXISTS log_pack_metadata (bms TEXT PRIMARY KEY,value TEXT)')
+        # Preserve static pack data from the old schema before clearing duplicates.
+        for bms in BMS_ADDRESSES.values():
+            row = history_db.execute('SELECT design_capacity_ah FROM samples WHERE bms=? AND design_capacity_ah IS NOT NULL ORDER BY ts DESC LIMIT 1', (bms,)).fetchone()
+            if row:
+                history_db.execute('INSERT OR IGNORE INTO log_pack_metadata VALUES (?,?)',
+                                   (bms, json.dumps({'design_capacity_ah': row[0]})))
+        redundant = [k for k in sample_columns if k not in SAMPLE_FIELDS]
+        history_db.execute('UPDATE samples SET '+','.join(k+'=NULL' for k in redundant)+
+                           ' WHERE '+ ' OR '.join(k+' IS NOT NULL' for k in redundant))
+        # One-time compaction of existing events; retain alarms/full/FCC and settings.
+        rows = history_db.execute('SELECT id,kind,detail FROM status_events').fetchall()
+        for event_id, kind, payload in rows:
+            detail = json.loads(payload)
+            changes = detail.get('changes', [])
+            if kind == 'status' and changes and all(c.get('byte') in (34,35) for c in changes):
+                history_db.execute('DELETE FROM status_events WHERE id=?', (event_id,))
+                continue
+            payload_new = json.dumps(compact_event_detail(kind, detail), ensure_ascii=False, separators=(',', ':'))
+            if payload_new != payload:
+                history_db.execute('UPDATE status_events SET detail=? WHERE id=?', (payload_new,event_id))
+        prune_history(force=True)
         history_db.commit()
+        # Reclaim substantial free space once on startup; live writes reuse pages.
+        pages = history_db.execute('PRAGMA page_count').fetchone()[0]
+        free = history_db.execute('PRAGMA freelist_count').fetchone()[0]
+        if free > 2500 and free > pages * 0.25:
+            history_db.execute('VACUUM')
 
 def save_history(bms, snapshot):
     global history_error
@@ -5263,9 +5782,20 @@ def save_history(bms, snapshot):
     try:
         with history_lock:
             with history_db:
-                history_db.execute('INSERT OR REPLACE INTO samples VALUES (?,?,?,?,?)',
-                    (bms, snapshot['timestamp'], snapshot['soc'], snapshot['current'], snapshot['voltage']))
-                history_db.execute('DELETE FROM samples WHERE ts < ?', (time.time()-HISTORY_SECONDS,))
+                values = []
+                for key in SAMPLE_FIELDS:
+                    value = bms if key == 'bms' else snapshot[key]
+                    if key == 'fully_charged':
+                        value = value == 'Ja' if isinstance(value, str) else bool(value)
+                    value = compact_measurement(key, value)
+                    if key in SAMPLE_JSON_FIELDS:
+                        value = json.dumps(value, separators=(',', ':'))
+                    values.append(value)
+                history_db.execute('INSERT OR REPLACE INTO samples ('+
+                    ','.join(SAMPLE_SQL_FIELDS)+') VALUES ('+','.join('?' for _ in values)+')', values)
+                metadata = json.dumps({'design_capacity_ah': snapshot['design_capacity_ah']}, separators=(',', ':'))
+                history_db.execute('INSERT INTO log_pack_metadata VALUES (?,?) ON CONFLICT(bms) DO UPDATE SET value=excluded.value WHERE value != excluded.value', (bms,metadata))
+                prune_history()
         history_last[bms] = now
         history_error = None
     except Exception as exc:
@@ -5279,7 +5809,7 @@ def api_history():
     now = time.time()
     with history_lock:
         rows = history_db.execute('SELECT bms,ts,soc,current,voltage FROM samples WHERE ts >= ? AND ts <= ? ORDER BY ts',
-                                 (now-HISTORY_SECONDS, now)).fetchall()
+                                 (now-CHART_HISTORY_SECONDS, now)).fetchall()
     packs = {bms: [] for bms in BMS_ADDRESSES.values()}
     for bms, ts, soc, current, voltage in rows:
         if bms in packs:
@@ -5291,17 +5821,23 @@ def api_history():
 # Status journal: observations/correlations, never inferred causes.
 event_error = None
 previous_observations = {}
-EVENT_LIMIT = 10000
 
 def event_insert(bms, kind, detail):
     history_db.execute('INSERT INTO status_events(ts,bms,kind,detail) VALUES (?,?,?,?)',
-                       (time.time(), bms, kind, json.dumps(detail, ensure_ascii=False)))
-    history_db.execute('DELETE FROM status_events WHERE id <= (SELECT id FROM status_events ORDER BY id DESC LIMIT 1 OFFSET ?)', (EVENT_LIMIT,))
-    history_db.execute('DELETE FROM status_events WHERE ts < ?', (time.time()-7*86400,))
+        (time.time(), bms, kind, json.dumps(compact_event_detail(kind, detail), ensure_ascii=False, separators=(',', ':'))))
+    # Event caps are enforced immediately; age pruning is also run by live samples.
+    condition = "kind IN ('capacity','capacity_baseline')" if kind in ('capacity','capacity_baseline') else "kind NOT IN ('capacity','capacity_baseline')"
+    limit = CAPACITY_EVENT_LIMIT if kind in ('capacity','capacity_baseline') else EVENT_LIMIT
+    history_db.execute('DELETE FROM status_events WHERE id IN (SELECT id FROM status_events WHERE '+condition+' ORDER BY id DESC LIMIT -1 OFFSET ?)', (limit,))
+    prune_history()
+
 
 def observation_context(snapshot):
-    return {key: snapshot[key] for key in ('timestamp','soc','current','voltage','delta_mv','min_cell','max_cell',
-            'min_v','max_v','cells','charging','full_capacity_ah','temperatures','alarm','protection')}
+    return {key: snapshot[key] for key in (
+            'timestamp','soc','remaining_capacity_ah','full_capacity_ah',
+            'design_capacity_ah','soh','cycle_count','current','voltage','delta_mv',
+            'min_cell','max_cell','min_v','max_v','cells','charging',
+            'fully_charged','temperatures','alarm','protection')}
 
 def record_status_event(bms, status, snapshot):
     global event_error
@@ -5335,13 +5871,10 @@ def record_status_event(bms, status, snapshot):
                     for offset,value in enumerate(raw):
                         for bit in range(8):
                             history_db.execute('INSERT OR IGNORE INTO observed_bits VALUES (?,?,?,?)',(bms,offset,bit,(value>>bit)&1))
-                    recent=history_db.execute("SELECT ts,detail FROM status_events WHERE kind='parameters' AND bms=? AND ts>=? ORDER BY id DESC LIMIT 1", (bms,time.time()-120,)).fetchone()
-                    event_insert(bms,'status' if before else 'baseline',{
-                        'changes':changes,'raw_before':old_raw,'raw_after':raw,
-                        'before':before['context'] if before else None,'after':context,
-                        'recent_parameters':{'timestamp':recent[0],'detail':json.loads(recent[1])} if recent else None,
-                        'decoded_after':decoded_status(status),
-                        'note':'Gelijktijdige waarnemingen; oorzaak niet vastgesteld. Byte-index vanaf 0. Eerste waarneming geldt sinds dit log bestaat.'})
+                    if before is None or any(c['byte'] not in (34,35) for c in changes):
+                        event_insert(bms,'status' if before else 'baseline',{
+                            'changes':changes,'raw_before':old_raw,'raw_after':raw,
+                            'before':before['context'] if before else None,'after':context})
                     history_db.execute('INSERT OR REPLACE INTO status_baselines VALUES (?,?,?)',(bms,json.dumps(raw),json.dumps(context)))
             # Compare measurements with the immediately preceding successful poll.
             previous_observations[bms]={'raw':raw,'context':context}
@@ -5367,7 +5900,7 @@ def record_capacity_event(bms, status, snapshot):
                         "changes": changes, "before": old, "after": values,
                         "context": observation_context(snapshot),
                         "raw_status": list(status["raw_payload"]),
-                        "note": "FCC/cycli gewijzigd ten opzichte van vorige vastgelegde waarde. Geen bewijs van de oorzaak of een automatische recount."})
+                        "note": "FCC/cycli gewijzigd ten opzichte van vorige vastgelegde waarde. De oorzaak wordt niet door dit bericht uitgelezen."})
                     history_db.execute("INSERT OR REPLACE INTO capacity_baselines VALUES (?,?)", (bms,json.dumps(values)))
     except Exception as exc:
         print(f"{bms} FCC-log fout: {exc}", flush=True)
@@ -5375,11 +5908,11 @@ def record_capacity_event(bms, status, snapshot):
 
 def record_parameter_event(data):
     global event_error
-    values={key:value for key,value in data.items() if key!='read_at'}
+    values=parameter_log_values(data)
     try:
         with history_lock:
             row=history_db.execute('SELECT value FROM parameter_baselines WHERE bms=?', (current_bms(),)).fetchone()
-            old=json.loads(row[0]) if row else None
+            old=parameter_log_values(json.loads(row[0])) if row else None
             if old!=values:
                 with history_db:
                     changes=[]
@@ -5456,14 +5989,54 @@ def api_events_export():
     if end is not None:
         clauses.append("ts < ?"); values.append(end)
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    sample_fields = SAMPLE_FIELDS
+    sample_select = ','.join(SAMPLE_SQL_FIELDS)
     with history_lock:
+        with history_db:
+            prune_history()
         rows=history_db.execute('SELECT id,ts,bms,kind,detail FROM status_events'+where+' ORDER BY id', values).fetchall()
+        pack_metadata = {b:json.loads(v) for b,v in history_db.execute('SELECT bms,value FROM log_pack_metadata')}
+        parameters_at_export = {b:parameter_log_values(json.loads(v)) for b,v in history_db.execute('SELECT bms,value FROM parameter_baselines')}
         retained=history_db.execute('SELECT MIN(ts),MAX(ts),COUNT(*) FROM status_events').fetchone()
+        sample_rows=history_db.execute(
+            'SELECT '+sample_select+' FROM samples'+where+' ORDER BY ts,bms', values
+        ).fetchall()
+        samples_retained=history_db.execute(
+            'SELECT MIN(ts),MAX(ts),COUNT(*) FROM samples'
+        ).fetchone()
+
+    samples=[]
+    for row in sample_rows:
+        sample=dict(zip(sample_fields,row))
+        for field in SAMPLE_JSON_FIELDS:
+            value=sample[field]
+            sample[field]=json.loads(value) if value else []
+        for field in ('fully_charged',):
+            value=sample[field]
+            sample[field]=bool(value) if value is not None else None
+        samples.append({key:compact_measurement(key,value) for key,value in sample.items()})
+
     response=jsonify(
         events=[dict(id=r[0],timestamp=r[1],bms=r[2],kind=r[3],detail=json.loads(r[4])) for r in rows],
-        export={"period":period,"timezone":"Europe/Amsterdam","generated_at":now,
-                "start_inclusive":start,"end_exclusive":end,"count":len(rows),
-                "retained_first":retained[0],"retained_last":retained[1],"retained_count":retained[2]})
+        samples=samples,
+        pack_metadata=pack_metadata,
+        parameters_at_export=parameters_at_export,
+        export={"schema_version":HISTORY_SCHEMA_VERSION,"period":period,"timezone":"Europe/Amsterdam","generated_at":now,
+                "start_inclusive":start,"end_exclusive":end,
+                "count":len(rows),"event_count":len(rows),"sample_count":len(samples),
+                "retained_first":retained[0],"retained_last":retained[1],"retained_count":retained[2],
+                "samples_retained_first":samples_retained[0],
+                "samples_retained_last":samples_retained[1],
+                "samples_retained_count":samples_retained[2],
+                "sample_interval_seconds":HISTORY_INTERVAL,
+                "sample_retention_seconds":SAMPLE_RETENTION_SECONDS,
+                "event_retention_seconds":EVENT_RETENTION_SECONDS,
+                "capacity_retention_seconds":CAPACITY_RETENTION_SECONDS,
+                "event_limit":EVENT_LIMIT,"capacity_event_limit":CAPACITY_EVENT_LIMIT,
+                "sample_fields":list(SAMPLE_FIELDS),
+                "notes":["Vermogen, celmin/max/delta en SOH zijn afleidbaar uit de metingen.",
+                         "Ruwe statusbytes staan bij statuswijzigingen; balansstatus staat in de samples.",
+                         "Parameters_at_export zijn laatst uitgelezen instellingen, niet noodzakelijk de instellingen gedurende de gekozen periode."]})
     stamp=datetime.fromtimestamp(now,EXPORT_TIMEZONE).strftime("%Y%m%d-%H%M%S")
     response.headers['Content-Disposition']=f'attachment; filename="pace-statuslog-{period}-{stamp}.json"'
     response.headers['Cache-Control']='no-store'
